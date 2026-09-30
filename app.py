@@ -8,7 +8,7 @@ from pathlib import Path
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.screen import Screen
+from textual.screen import ModalScreen, Screen
 from textual.widgets import Footer, Header, Input, Static
 
 
@@ -223,6 +223,45 @@ class TodoDB:
         )
         self.conn.commit()
 
+    def carry_pending_tasks_to_next_day(self, holiday: date) -> int:
+        """Carry incomplete tasks from a holiday to the following day.
+
+        Recurring tasks already have a next-day occurrence, so their holiday
+        occurrence is removed instead of creating a duplicate.
+        """
+        next_day = holiday + timedelta(days=1)
+
+        tasks = self.conn.execute(
+            """
+            SELECT *
+            FROM tasks
+            WHERE due_date = ? AND completed = 0
+            ORDER BY id
+            """,
+            (holiday.isoformat(),),
+        ).fetchall()
+
+        moved = 0
+
+        for task in tasks:
+            if task["recurring_id"] is not None:
+                # The normal recurring occurrence for the next day already
+                # exists. Remove only the holiday occurrence.
+                self.conn.execute(
+                    "DELETE FROM tasks WHERE id = ?",
+                    (task["id"],),
+                )
+            else:
+                self.conn.execute(
+                    "UPDATE tasks SET due_date = ? WHERE id = ?",
+                    (next_day.isoformat(), task["id"]),
+                )
+
+            moved += 1
+
+        self.conn.commit()
+        return moved
+
     def is_holiday(self, holiday: date) -> bool:
         row = self.conn.execute(
             "SELECT 1 FROM holidays WHERE holiday_date = ?",
@@ -324,12 +363,50 @@ class CalendarWidget(Static):
         return output
 
 
+class HolidayCarryDialog(ModalScreen):
+    """Ask whether incomplete tasks should move to the next day."""
+
+    BINDINGS = [
+        ("y", "carry", "Yes"),
+        ("n", "keep", "No"),
+        ("escape", "keep", "No"),
+    ]
+
+    def __init__(self, holiday: date):
+        super().__init__()
+        self.holiday = holiday
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="holiday_dialog"):
+            yield Static(
+                f"Mark {self.holiday.strftime('%d %B %Y')} as a holiday?",
+                id="holiday_title",
+            )
+            yield Static(
+                "Move incomplete tasks to the next day?",
+                id="holiday_question",
+            )
+            yield Static(
+                "Y = Yes, carry tasks    N / Esc = No, keep tasks",
+                id="holiday_help",
+            )
+
+    def action_carry(self) -> None:
+        self.dismiss(True)
+
+    def action_keep(self) -> None:
+        self.dismiss(False)
+
+
+
+
 class AllTasksScreen(Screen):
     """Separate page containing every stored task."""
 
     BINDINGS = [
         ("escape", "back", "Back"),
         ("q", "back", "Back"),
+        ("l", "back", "Back"),
     ]
 
     def __init__(self, db: TodoDB):
@@ -342,7 +419,7 @@ class AllTasksScreen(Screen):
         with Vertical(id="all_tasks_page"):
             yield Static("All Tasks", id="all_tasks_title")
             yield Static(
-                "Every task in the database • completed and pending",
+                "All tasks • grouped by date • Esc / q / l to return",
                 id="all_tasks_subtitle",
             )
             yield VerticalScroll(id="all_tasks_list")
@@ -460,6 +537,39 @@ class KakarotTodo(App):
         content-align: center middle;
     }
 
+    /* ---------- Holiday confirmation ---------- */
+
+    HolidayCarryDialog {
+        align: center middle;
+        background: rgba(0, 0, 0, 0.65);
+    }
+
+    #holiday_dialog {
+        width: 62;
+        height: 12;
+        border: round #8f4f4f;
+        background: #161616;
+        padding: 1 2;
+        content-align: center middle;
+    }
+
+    #holiday_title {
+        height: 2;
+        text-style: bold;
+        content-align: center middle;
+    }
+
+    #holiday_question {
+        height: 3;
+        content-align: center middle;
+    }
+
+    #holiday_help {
+        height: 2;
+        color: #999999;
+        content-align: center middle;
+    }
+
     /* ---------- All Tasks page ---------- */
 
     #all_tasks_page {
@@ -482,14 +592,15 @@ class KakarotTodo(App):
     #all_tasks_list {
         height: 1fr;
         border: round #444444;
-        padding: 1 2;
+        padding: 0 1;
     }
 
     .date_group {
         height: 2;
         margin-top: 1;
         color: #e8e8e8;
-        text-style: bold underline;
+        text-style: bold;
+        padding: 0 1;
     }
 
     .all_task_row {
@@ -691,10 +802,27 @@ class KakarotTodo(App):
     def action_toggle_holiday(self) -> None:
         if self.db.is_holiday(self.selected_date):
             self.db.remove_holiday(self.selected_date)
-        else:
-            self.db.set_holiday(self.selected_date)
+            self.refresh_view()
+            return
 
-        self.refresh_view()
+        holiday = self.selected_date
+
+        def handle_carry(carry_tasks: bool) -> None:
+            self.db.set_holiday(holiday)
+
+            if carry_tasks:
+                moved = self.db.carry_pending_tasks_to_next_day(holiday)
+                self.notify(
+                    f"Holiday marked. {moved} incomplete task(s) carried to "
+                    f"{(holiday + timedelta(days=1)).strftime('%d %B')}."
+                )
+            else:
+                self.notify("Holiday marked. Tasks stay on this date.")
+
+            self.selected_task_index = 0
+            self.refresh_view()
+
+        self.push_screen(HolidayCarryDialog(holiday), handle_carry)
 
     # ---------- Delete ----------
 

@@ -1,6 +1,6 @@
 [project]
 name = "kakarot-todo"
-version = "0.3.0"
+version = "0.4.0"
 description = "A simple local-first TUI daily todo manager"
 readme = "README.md"
 requires-python = ">=3.10"

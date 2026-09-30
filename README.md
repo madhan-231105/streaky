@@ -1,20 +1,20 @@
-# Kakarot Todo V3
+# Kakarot Todo V4
 
 A simple local-first daily todo TUI built with Python, Textual and SQLite.
 
-## What's new in V3
+## What's new in V4
 
-- Added a separate **All Tasks** page.
-- Press `l` to open All Tasks.
-- Press `Esc` or `q` to return to the main page.
-- All stored tasks are grouped by date.
-- Completed tasks are shown with `✓`.
-- Recurring tasks are marked with `🔁 daily`.
-- Holidays are shown with a **subtle light-red background** in the calendar.
-- Press `h` on a selected date to mark/unmark it as a holiday.
-- Holiday dates are also labelled on the All Tasks page.
+- `l` opens the **All Tasks** page.
+- `Esc`, `q`, or `l` returns from **All Tasks**.
+- All Tasks is kept simple: dates are grouped, with compact task rows.
+- Marking a date as a holiday asks:
+  **"Move incomplete tasks to the next day?"**
+- `Y` carries incomplete tasks forward.
+- `N` or `Esc` keeps the tasks on the holiday date.
+- For recurring tasks, the existing next-day recurring occurrence is used, so duplicates are not created.
+- Holidays keep their subtle light-red calendar background.
 
-## Run with uv
+## Run
 
 ```bash
 uv venv
@@ -22,7 +22,7 @@ uv pip install -r requirements.txt
 uv run python app.py
 ```
 
-Or install the project as a command:
+Or:
 
 ```bash
 uv pip install -e .
@@ -39,18 +39,14 @@ uv run kakarot-todo
 | `Space` | Complete/uncomplete task |
 | `a` | Add task |
 | `h` | Mark/unmark holiday |
-| `l` | Open All Tasks page |
+| `l` | Open All Tasks / return from All Tasks |
 | `t` | Jump to today |
 | `d` | Delete selected task |
-| `q` | Quit / leave All Tasks page |
-| `Esc` | Leave All Tasks page |
+| `q` | Quit / return from All Tasks |
+| `Esc` | Return from All Tasks |
 
-## Database
-
-The application stores data locally at:
+Database:
 
 ```text
 ~/.kakarot-todo/todo.db
 ```
-
-No cloud service is required.

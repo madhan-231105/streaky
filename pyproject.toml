@@ -1,0 +1,12 @@
+[project]
+name = "kakarot-todo"
+version = "0.2.0"
+description = "A simple local-first TUI daily todo manager"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "textual>=1.0",
+]
+
+[project.scripts]
+kakarot-todo = "app:main"

@@ -8,7 +8,7 @@ from pathlib import Path
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.widgets import Footer, Header, Input, Static
+from textual.widgets import Checkbox, Footer, Header, Input, Static
 
 
 APP_DIR = Path.home() / ".kakarot-todo"
@@ -16,10 +16,16 @@ DB_PATH = APP_DIR / "todo.db"
 
 
 class TodoDB:
+    """Small SQLite data layer for tasks, recurring rules, and holidays."""
+
     def __init__(self, path: Path = DB_PATH):
         APP_DIR.mkdir(parents=True, exist_ok=True)
+
         self.conn = sqlite3.connect(path)
         self.conn.row_factory = sqlite3.Row
+        self._create_tables()
+
+    def _create_tables(self) -> None:
         self.conn.executescript(
             """
             CREATE TABLE IF NOT EXISTS recurring (
@@ -37,195 +43,287 @@ class TodoDB:
                 recurring_id INTEGER,
                 created_at TEXT NOT NULL,
                 completed_at TEXT,
-                FOREIGN KEY(recurring_id) REFERENCES recurring(id)
+                FOREIGN KEY (recurring_id) REFERENCES recurring(id)
             );
 
-            CREATE INDEX IF NOT EXISTS idx_tasks_due ON tasks(due_date);
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_recurring_daily_occurrence
-                ON tasks(recurring_id, due_date)
-                WHERE recurring_id IS NOT NULL;
+            CREATE TABLE IF NOT EXISTS holidays (
+                holiday_date TEXT PRIMARY KEY,
+                note TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_tasks_due_date
+            ON tasks(due_date);
+
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_daily_occurrence
+            ON tasks(recurring_id, due_date)
+            WHERE recurring_id IS NOT NULL;
             """
         )
-        self.ensure_recurring_occurrences()
+        self.conn.commit()
 
-    def ensure_recurring_occurrences(self, days: int = 120) -> None:
-        today = date.today()
-        recurring = self.conn.execute(
-            "SELECT id, title, recurrence FROM recurring WHERE active = 1"
-        ).fetchall()
+    # ---------- Tasks ----------
 
-        for item in recurring:
-            if item["recurrence"] != "daily":
-                continue
-            for offset in range(days):
-                d = today + timedelta(days=offset)
+    def add_task(self, title: str, due_date: date, recurring: bool) -> None:
+        """Add either a one-time task or a daily recurring task."""
+        now = datetime.now().isoformat(timespec="seconds")
+
+        if recurring:
+            cursor = self.conn.execute(
+                """
+                INSERT INTO recurring(title, recurrence)
+                VALUES (?, 'daily')
+                """,
+                (title,),
+            )
+            recurring_id = cursor.lastrowid
+
+            # Create enough occurrences for the near future.
+            for offset in range(120):
+                occurrence_date = due_date + timedelta(days=offset)
                 self.conn.execute(
                     """
                     INSERT OR IGNORE INTO tasks
-                    (title, due_date, completed, recurring_id, created_at)
-                    VALUES (?, ?, 0, ?, ?)
+                    (title, due_date, recurring_id, created_at)
+                    VALUES (?, ?, ?, ?)
                     """,
                     (
-                        item["title"],
-                        d.isoformat(),
-                        item["id"],
-                        datetime.now().isoformat(timespec="seconds"),
+                        title,
+                        occurrence_date.isoformat(),
+                        recurring_id,
+                        now,
                     ),
                 )
-        self.conn.commit()
-
-    def add_daily(self, title: str) -> None:
-        cur = self.conn.execute(
-            "INSERT INTO recurring(title, recurrence) VALUES (?, 'daily')",
-            (title,),
-        )
-        rid = cur.lastrowid
-        today = date.today()
-        for offset in range(120):
-            d = today + timedelta(days=offset)
+        else:
             self.conn.execute(
                 """
-                INSERT OR IGNORE INTO tasks
-                (title, due_date, recurring_id, created_at)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO tasks(title, due_date, created_at)
+                VALUES (?, ?, ?)
                 """,
-                (
-                    title,
-                    d.isoformat(),
-                    rid,
-                    datetime.now().isoformat(timespec="seconds"),
-                ),
+                (title, due_date.isoformat(), now),
             )
+
         self.conn.commit()
 
-    def add_one_time(self, title: str, due: date) -> None:
-        self.conn.execute(
-            """
-            INSERT INTO tasks(title, due_date, created_at)
-            VALUES (?, ?, ?)
-            """,
-            (title, due.isoformat(), datetime.now().isoformat(timespec="seconds")),
-        )
-        self.conn.commit()
-
-    def tasks_for(self, d: date):
+    def get_tasks(self, selected_date: date) -> list[sqlite3.Row]:
         return self.conn.execute(
             """
-            SELECT * FROM tasks
+            SELECT *
+            FROM tasks
             WHERE due_date = ?
             ORDER BY completed ASC, recurring_id IS NULL ASC, id ASC
             """,
-            (d.isoformat(),),
+            (selected_date.isoformat(),),
         ).fetchall()
 
-    def toggle(self, task_id: int) -> None:
-        row = self.conn.execute(
-            "SELECT completed FROM tasks WHERE id = ?", (task_id,)
+    def toggle_task(self, task_id: int) -> None:
+        task = self.conn.execute(
+            "SELECT completed FROM tasks WHERE id = ?",
+            (task_id,),
         ).fetchone()
-        if not row:
+
+        if task is None:
             return
-        new_value = 0 if row["completed"] else 1
+
+        completed = not bool(task["completed"])
+        completed_at = (
+            datetime.now().isoformat(timespec="seconds")
+            if completed
+            else None
+        )
+
         self.conn.execute(
             """
             UPDATE tasks
             SET completed = ?, completed_at = ?
             WHERE id = ?
             """,
-            (
-                new_value,
-                datetime.now().isoformat(timespec="seconds") if new_value else None,
-                task_id,
-            ),
+            (int(completed), completed_at, task_id),
         )
         self.conn.commit()
 
-    def counts_for_month(self, year: int, month: int):
+    def delete_task(self, task_id: int) -> None:
+        self.conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+        self.conn.commit()
+
+    # ---------- Holidays ----------
+
+    def set_holiday(self, holiday_date: date, note: str = "") -> None:
+        """Mark a date as a holiday/excluded day."""
+        self.conn.execute(
+            """
+            INSERT INTO holidays(holiday_date, note)
+            VALUES (?, ?)
+            ON CONFLICT(holiday_date)
+            DO UPDATE SET note = excluded.note
+            """,
+            (holiday_date.isoformat(), note),
+        )
+        self.conn.commit()
+
+    def remove_holiday(self, holiday_date: date) -> None:
+        self.conn.execute(
+            "DELETE FROM holidays WHERE holiday_date = ?",
+            (holiday_date.isoformat(),),
+        )
+        self.conn.commit()
+
+    def is_holiday(self, selected_date: date) -> bool:
+        row = self.conn.execute(
+            "SELECT 1 FROM holidays WHERE holiday_date = ?",
+            (selected_date.isoformat(),),
+        ).fetchone()
+        return row is not None
+
+    def holiday_dates(self, year: int, month: int) -> set[str]:
+        first_day = date(year, month, 1)
+        last_day = date(
+            year + 1, 1, 1
+        ) if month == 12 else date(year, month + 1, 1)
+
         rows = self.conn.execute(
             """
-            SELECT due_date,
-                   SUM(CASE WHEN completed = 0 THEN 1 ELSE 0 END) AS pending,
-                   SUM(CASE WHEN completed = 1 THEN 1 ELSE 0 END) AS completed
+            SELECT holiday_date
+            FROM holidays
+            WHERE holiday_date >= ? AND holiday_date < ?
+            """,
+            (first_day.isoformat(), last_day.isoformat()),
+        ).fetchall()
+
+        return {row["holiday_date"] for row in rows}
+
+    # ---------- Calendar / stats ----------
+
+    def month_task_counts(self, year: int, month: int) -> dict[str, tuple[int, int]]:
+        first_day = date(year, month, 1)
+        last_day = (
+            date(year + 1, 1, 1)
+            if month == 12
+            else date(year, month + 1, 1)
+        )
+
+        rows = self.conn.execute(
+            """
+            SELECT
+                due_date,
+                SUM(CASE WHEN completed = 0 THEN 1 ELSE 0 END) AS pending,
+                SUM(CASE WHEN completed = 1 THEN 1 ELSE 0 END) AS completed
             FROM tasks
             WHERE due_date >= ? AND due_date < ?
             GROUP BY due_date
             """,
-            (
-                date(year, month, 1).isoformat(),
-                (
-                    date(year + 1, 1, 1)
-                    if month == 12
-                    else date(year, month + 1, 1)
-                ).isoformat(),
-            ),
+            (first_day.isoformat(), last_day.isoformat()),
         ).fetchall()
-        return {r["due_date"]: (r["pending"], r["completed"]) for r in rows}
 
-    def stats(self):
+        return {
+            row["due_date"]: (row["pending"], row["completed"])
+            for row in rows
+        }
+
+    def today_stats(self) -> tuple[int, int]:
         today = date.today().isoformat()
+
         pending = self.conn.execute(
-            "SELECT COUNT(*) AS n FROM tasks WHERE due_date = ? AND completed = 0",
+            """
+            SELECT COUNT(*)
+            FROM tasks
+            WHERE due_date = ? AND completed = 0
+            """,
             (today,),
-        ).fetchone()["n"]
-        completed_today = self.conn.execute(
-            "SELECT COUNT(*) AS n FROM tasks WHERE due_date = ? AND completed = 1",
+        ).fetchone()[0]
+
+        completed = self.conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM tasks
+            WHERE due_date = ? AND completed = 1
+            """,
             (today,),
-        ).fetchone()["n"]
-        return pending, completed_today
+        ).fetchone()[0]
+
+        return pending, completed
 
 
 class CalendarWidget(Static):
+    """Render the month calendar without owning application state."""
+
     def __init__(self, app: "KakarotTodo"):
         super().__init__()
         self.todo_app = app
 
     def render(self) -> Text:
         app = self.todo_app
-        y, m = app.calendar_month.year, app.calendar_month.month
-        data = app.db.counts_for_month(y, m)
-        weeks = calendar.monthcalendar(y, m)
+        year = app.calendar_month.year
+        month = app.calendar_month.month
 
-        out = Text()
-        title = calendar.month_name[m] + f" {y}"
-        out.append(title.center(28) + "\n", style="bold")
-        out.append("Mo Tu We Th Fr Sa Su\n", style="dim")
+        task_counts = app.db.month_task_counts(year, month)
+        holidays = app.db.holiday_dates(year, month)
 
-        for week in weeks:
-            for day in week:
-                if day == 0:
-                    out.append("   ")
+        output = Text()
+        title = f"{calendar.month_name[month]} {year}"
+        output.append(title.center(31) + "\n", style="bold")
+        output.append("Mo  Tu  We  Th  Fr  Sa  Su\n", style="dim")
+
+        for week in calendar.monthcalendar(year, month):
+            for day_number in week:
+                if day_number == 0:
+                    output.append("    ")
                     continue
 
-                d = date(y, m, day)
-                key = d.isoformat()
-                pending, done = data.get(key, (0, 0))
-                selected = d == app.selected_date
-                today = d == date.today()
+                current = date(year, month, day_number)
+                key = current.isoformat()
+                pending, completed = task_counts.get(key, (0, 0))
 
-                label = f"{day:2d}"
-                if selected:
-                    out.append(f"[{label}]", style="bold reverse")
-                elif today:
-                    out.append(f"{label}", style="bold underline")
+                if current == app.selected_date:
+                    style = "bold reverse"
+                    marker = "[]"
+                elif key in holidays:
+                    style = "bold"
+                    marker = "H "
+                elif current == date.today():
+                    style = "bold underline"
+                    marker = "  "
+                elif completed:
+                    style = "bold"
+                    marker = "✓ "
                 elif pending:
-                    out.append(f"{label}", style="bold")
+                    style = "bold"
+                    marker = "• "
                 else:
-                    out.append(label)
+                    style = ""
+                    marker = "  "
 
-                out.append(" ")
-            out.append("\n")
+                output.append(f"{marker}{day_number:2d} ", style=style)
 
-        out.append("\n")
-        out.append("● ", style="bold")
-        out.append("tasks due  ")
-        out.append("✓ ", style="bold")
-        out.append("completed  ")
-        out.append("[] ", style="reverse")
-        out.append("selected")
-        return out
+            output.append("\n")
+
+        output.append("\n")
+        output.append("H ", style="bold")
+        output.append("Holiday  ")
+        output.append("• ", style="bold")
+        output.append("Task  ")
+        output.append("✓ ", style="bold")
+        output.append("Done  ")
+        output.append("[] ", style="reverse")
+        output.append("Selected")
+
+        return output
+
+
+class AddTaskDialog(Vertical):
+    """Simple inline dialog for creating a task."""
+
+    def compose(self) -> ComposeResult:
+        yield Static("Add Task", classes="dialog_title")
+        yield Input(placeholder="Task name", id="task_title")
+        yield Checkbox("Repeat every day", id="repeat_daily")
+        yield Static("Enter = Save   Esc = Cancel", classes="dialog_help")
 
 
 class KakarotTodo(App):
+    """Main application."""
+
     TITLE = "Kakarot Todo"
+
     CSS = """
     Screen {
         background: #0b0b0b;
@@ -264,7 +362,6 @@ class KakarotTodo(App):
 
     .selected_task {
         background: #333333;
-        color: white;
         text-style: bold;
     }
 
@@ -273,16 +370,28 @@ class KakarotTodo(App):
         text-style: strike;
     }
 
-    #add_input {
+    #dialog {
         display: none;
-        height: 3;
+        height: auto;
+        padding: 1 2;
+        border: round #777777;
+        margin-top: 1;
+    }
+
+    .dialog_title {
+        text-style: bold;
+        margin-bottom: 1;
+    }
+
+    .dialog_help {
+        color: #888888;
         margin-top: 1;
     }
 
     #status {
         height: 3;
         border-top: solid #444444;
-        padding: 0 2;
+        padding: 0 1;
         content-align: center middle;
     }
 
@@ -293,24 +402,27 @@ class KakarotTodo(App):
 
     BINDINGS = [
         ("q", "quit", "Quit"),
-        ("up", "prev_task", "Task ↑"),
+        ("up", "previous_task", "Task ↑"),
         ("down", "next_task", "Task ↓"),
         ("space", "toggle_task", "Complete"),
-        ("left", "prev_day", "Date ←"),
+        ("left", "previous_day", "Date ←"),
         ("right", "next_day", "Date →"),
-        ("pageup", "prev_month", "Month ←"),
+        ("pageup", "previous_month", "Month ←"),
         ("pagedown", "next_month", "Month →"),
-        ("a", "add_task", "Add"),
+        ("a", "show_add_dialog", "Add"),
+        ("h", "toggle_holiday", "Holiday"),
         ("d", "delete_task", "Delete"),
         ("t", "today", "Today"),
     ]
 
     def __init__(self):
         super().__init__()
+
         self.db = TodoDB()
         self.selected_date = date.today()
         self.calendar_month = date.today().replace(day=1)
         self.selected_task_index = 0
+        self.dialog_open = False
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -319,10 +431,15 @@ class KakarotTodo(App):
             with Vertical(id="tasks_panel"):
                 yield Static(id="task_header")
                 yield VerticalScroll(id="task_list")
-                yield Input(
-                    placeholder="Type task and press Enter (prefix 'daily:' for recurring)",
-                    id="add_input",
-                )
+
+                with Vertical(id="dialog"):
+                    yield Static("Add Task", classes="dialog_title")
+                    yield Input(placeholder="Task name", id="task_title")
+                    yield Checkbox("Repeat every day", id="repeat_daily")
+                    yield Static(
+                        "Enter = Save   Esc = Cancel",
+                        classes="dialog_help",
+                    )
 
             with Vertical(id="calendar_panel"):
                 yield CalendarWidget(self)
@@ -333,45 +450,61 @@ class KakarotTodo(App):
     def on_mount(self) -> None:
         self.refresh_view()
 
+    # ---------- View ----------
+
     def refresh_view(self) -> None:
-        tasks = self.db.tasks_for(self.selected_date)
+        tasks = self.db.get_tasks(self.selected_date)
+
         header = self.query_one("#task_header", Static)
+        holiday_label = "  •  HOLIDAY" if self.db.is_holiday(self.selected_date) else ""
+
         header.update(
-            f"{self.selected_date.strftime('%A, %d %B %Y')}\n"
-            f"Today-first task list"
+            f"{self.selected_date.strftime('%A, %d %B %Y')}{holiday_label}\n"
+            "Tasks"
         )
 
         task_list = self.query_one("#task_list", VerticalScroll)
         task_list.remove_children()
 
         if not tasks:
-            task_list.mount(Static("No tasks for this date.\nPress 'a' to add one.", classes="task_row"))
+            task_list.mount(
+                Static(
+                    "No tasks for this date.\n"
+                    "Press 'a' to add a task.",
+                    classes="task_row",
+                )
+            )
         else:
-            for i, task in enumerate(tasks):
+            for index, task in enumerate(tasks):
                 prefix = "✓" if task["completed"] else "☐"
-                recur = "  🔁 daily" if task["recurring_id"] else ""
-                text = f"{prefix}  {task['title']}{recur}"
+                recurring = "  🔁 daily" if task["recurring_id"] else ""
+                text = f"{prefix}  {task['title']}{recurring}"
+
                 classes = "task_row"
                 if task["completed"]:
                     classes += " completed"
-                if i == self.selected_task_index:
+                if index == self.selected_task_index:
                     classes += " selected_task"
+
                 task_list.mount(Static(text, classes=classes))
 
-        pending, completed = self.db.stats()
-        status = self.query_one("#status", Static)
-        status.update(
-            f"Today: {completed} completed  •  {pending} pending   "
-            f" |  ←→ date  ↑↓ task  Space complete  a add"
+        pending, completed = self.db.today_stats()
+        holiday = "  •  Holiday marked" if self.db.is_holiday(date.today()) else ""
+
+        self.query_one("#status", Static).update(
+            f"Today: {completed} completed • {pending} pending{holiday}\n"
+            "←→ date   ↑↓ task   Space complete   a add   h holiday"
         )
+
         self.query_one(CalendarWidget).refresh()
 
-    def current_tasks(self):
-        return self.db.tasks_for(self.selected_date)
+    # ---------- Task navigation ----------
 
-    def action_prev_task(self) -> None:
-        tasks = self.current_tasks()
-        if tasks:
+    def current_tasks(self) -> list[sqlite3.Row]:
+        return self.db.get_tasks(self.selected_date)
+
+    def action_previous_task(self) -> None:
+        if self.current_tasks():
             self.selected_task_index = max(0, self.selected_task_index - 1)
             self.refresh_view()
 
@@ -379,7 +512,8 @@ class KakarotTodo(App):
         tasks = self.current_tasks()
         if tasks:
             self.selected_task_index = min(
-                len(tasks) - 1, self.selected_task_index + 1
+                len(tasks) - 1,
+                self.selected_task_index + 1,
             )
             self.refresh_view()
 
@@ -387,36 +521,49 @@ class KakarotTodo(App):
         tasks = self.current_tasks()
         if not tasks:
             return
-        task = tasks[self.selected_task_index]
-        self.db.toggle(task["id"])
+
+        self.db.toggle_task(tasks[self.selected_task_index]["id"])
         self.refresh_view()
 
-    def move_date(self, delta: int) -> None:
-        self.selected_date += timedelta(days=delta)
+    def action_delete_task(self) -> None:
+        tasks = self.current_tasks()
+        if not tasks:
+            return
+
+        self.db.delete_task(tasks[self.selected_task_index]["id"])
+        self.selected_task_index = max(0, self.selected_task_index - 1)
+        self.refresh_view()
+
+    # ---------- Date navigation ----------
+
+    def move_date(self, days: int) -> None:
+        self.selected_date += timedelta(days=days)
         self.calendar_month = self.selected_date.replace(day=1)
         self.selected_task_index = 0
         self.refresh_view()
 
-    def action_prev_day(self) -> None:
+    def action_previous_day(self) -> None:
         self.move_date(-1)
 
     def action_next_day(self) -> None:
         self.move_date(1)
 
-    def action_prev_month(self) -> None:
-        first = self.calendar_month
-        if first.month == 1:
-            self.calendar_month = date(first.year - 1, 12, 1)
-        else:
-            self.calendar_month = date(first.year, first.month - 1, 1)
+    def action_previous_month(self) -> None:
+        current = self.calendar_month
+        self.calendar_month = (
+            date(current.year - 1, 12, 1)
+            if current.month == 1
+            else date(current.year, current.month - 1, 1)
+        )
         self.query_one(CalendarWidget).refresh()
 
     def action_next_month(self) -> None:
-        first = self.calendar_month
-        if first.month == 12:
-            self.calendar_month = date(first.year + 1, 1, 1)
-        else:
-            self.calendar_month = date(first.year, first.month + 1, 1)
+        current = self.calendar_month
+        self.calendar_month = (
+            date(current.year + 1, 1, 1)
+            if current.month == 12
+            else date(current.year, current.month + 1, 1)
+        )
         self.query_one(CalendarWidget).refresh()
 
     def action_today(self) -> None:
@@ -425,40 +572,68 @@ class KakarotTodo(App):
         self.selected_task_index = 0
         self.refresh_view()
 
-    def action_add_task(self) -> None:
-        inp = self.query_one("#add_input", Input)
-        inp.display = True
-        inp.focus()
+    # ---------- Add task dialog ----------
+
+    def action_show_add_dialog(self) -> None:
+        self.dialog_open = True
+        dialog = self.query_one("#dialog", Vertical)
+        dialog.display = True
+
+        title_input = self.query_one("#task_title", Input)
+        title_input.value = ""
+        self.query_one("#repeat_daily", Checkbox).value = False
+        title_input.focus()
+
+    def close_add_dialog(self) -> None:
+        self.dialog_open = False
+        self.query_one("#dialog", Vertical).display = False
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
-        value = event.value.strip()
-        event.input.value = ""
-        event.input.display = False
-
-        if not value:
-            self.refresh_view()
+        if event.input.id != "task_title":
             return
 
-        if value.lower().startswith("daily:"):
-            title = value[6:].strip()
-            if title:
-                self.db.add_daily(title)
-        else:
-            self.db.add_one_time(value, self.selected_date)
+        title = event.value.strip()
+        if not title:
+            self.close_add_dialog()
+            return
+
+        recurring = self.query_one("#repeat_daily", Checkbox).value
+
+        self.db.add_task(
+            title=title,
+            due_date=self.selected_date,
+            recurring=recurring,
+        )
 
         self.selected_task_index = 0
+        self.close_add_dialog()
         self.refresh_view()
 
-    def action_delete_task(self) -> None:
-        tasks = self.current_tasks()
-        if not tasks:
-            return
-        task = tasks[self.selected_task_index]
-        self.db.conn.execute("DELETE FROM tasks WHERE id = ?", (task["id"],))
-        self.db.conn.commit()
-        self.selected_task_index = max(0, self.selected_task_index - 1)
+    # ---------- Holidays ----------
+
+    def action_toggle_holiday(self) -> None:
+        """
+        Mark/unmark the selected date as a holiday.
+
+        A holiday is an explicitly excluded day. It is stored before the day
+        ends, so future streak logic can treat it as an allowed gap.
+        """
+        if self.db.is_holiday(self.selected_date):
+            self.db.remove_holiday(self.selected_date)
+        else:
+            self.db.set_holiday(self.selected_date)
+
         self.refresh_view()
+
+    def on_key(self, event) -> None:
+        if event.key == "escape" and self.dialog_open:
+            self.close_add_dialog()
+            event.stop()
+
+
+def main() -> None:
+    KakarotTodo().run()
 
 
 if __name__ == "__main__":
-    KakarotTodo().run()
+    main()

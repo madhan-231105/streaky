@@ -1,47 +1,101 @@
 # Kakarot Todo
 
-A local-first daily todo TUI built with Python, Textual and SQLite.
+A small, local-first TUI todo application built with **Python, Textual, and SQLite**.
 
-## Install
+The goal is to keep the code simple enough to understand and extend.
 
-```bash
-cd kakarot-todo
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-python app.py
-```
+## Features
 
-## Keys
+- Tasks stored locally in SQLite
+- One-time tasks
+- Daily recurring tasks
+- Add-task dialog with a **Repeat every day** checkbox
+- Same-page monthly calendar
+- Date navigation
+- Holiday/excluded-day marking
+- Completion history
+- No cloud account required
 
-- `↑/↓` — select task
-- `Space` — complete/uncomplete selected task
-- `←/→` — move selected date
-- `PageUp/PageDown` — change calendar month
-- `t` — jump to today
-- `a` — add task
-- `d` — delete selected task
-- `q` — quit
-
-## Adding tasks
-
-Press `a`, type a task, and press Enter.
-
-Normal task:
+## Project structure
 
 ```text
-Finish DB diagram
+kakarot-todo/
+├── app.py
+├── pyproject.toml
+├── requirements.txt
+└── README.md
 ```
 
-Daily recurring task:
-
-```text
-daily: LeetCode
-```
-
-The calendar stays on the same screen. Daily tasks are pre-created for the next 120 days and are stored locally in:
+The application database is created automatically at:
 
 ```text
 ~/.kakarot-todo/todo.db
 ```
-# streaky
+
+## Run with uv
+
+```bash
+uv venv
+uv pip install -r requirements.txt
+uv run python app.py
+```
+
+## Run as a CLI
+
+After installing the project:
+
+```bash
+uv pip install -e .
+```
+
+you can run:
+
+```bash
+uv run kakarot-todo
+```
+
+## Controls
+
+| Key | Action |
+|---|---|
+| `↑` / `↓` | Select task |
+| `Space` | Complete / uncomplete |
+| `←` / `→` | Previous / next day |
+| `PageUp` / `PageDown` | Previous / next month |
+| `t` | Jump to today |
+| `a` | Add task |
+| `h` | Mark/unmark holiday |
+| `d` | Delete selected task |
+| `q` | Quit |
+
+## Adding a task
+
+Press `a`.
+
+The dialog contains:
+
+```text
+Add Task
+
+Task name: [________________]
+
+☐ Repeat every day
+
+Enter = Save   Esc = Cancel
+```
+
+If **Repeat every day** is checked, the task is created as a daily recurring task.
+
+If it is unchecked, the task is only created for the selected date.
+
+## Holidays and streaks
+
+Press `h` while a date is selected to mark it as a holiday.
+
+A holiday is an explicitly excluded day. It is stored in the database so future streak calculations can skip that date rather than treating it as a missed day.
+
+**Important:** the current V2 stores holidays and displays them in the calendar. A dedicated streak calculation is intentionally left for the next feature, so the streak logic can be implemented separately and clearly.
+
+## License
+
+Choose the license you want before publishing the repository.

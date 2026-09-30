@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+set -e
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT_DIR"
+
+echo "╭──────────────────────────────╮"
+echo "│       Streaky Update         │"
+echo "╰──────────────────────────────╯"
+echo
+
+if ! command -v uv >/dev/null 2>&1; then
+    echo "uv is required."
+    read -r -p "Install uv now? [Y/n]: " answer
+    answer="${answer:-Y}"
+
+    if [[ "$answer" =~ ^[Yy]$ ]]; then
+        if command -v pacman >/dev/null 2>&1; then
+            sudo pacman -S --needed uv
+        else
+            echo "Please install uv manually."
+            exit 1
+        fi
+    else
+        echo "Update cancelled."
+        exit 1
+    fi
+fi
+
+if ! command -v streaky >/dev/null 2>&1; then
+    echo "Streaky is not installed."
+    echo
+    read -r -p "Install Streaky now? [Y/n]: " answer
+    answer="${answer:-Y}"
+
+    if [[ "$answer" =~ ^[Yy]$ ]]; then
+        uv tool install .
+        echo
+        echo "✓ Streaky installed."
+        echo "Run: streaky"
+echo
+echo "Data directory: $HOME/.streaky"
+echo "Database:       $HOME/.streaky/streaky.db"
+    else
+        echo "Update cancelled."
+        exit 1
+    fi
+    exit 0
+fi
+
+echo "Streaky is installed."
+read -r -p "Update Streaky from this source? [Y/n]: " answer
+answer="${answer:-Y}"
+
+if [[ "$answer" =~ ^[Yy]$ ]]; then
+    uv tool install --force .
+    echo
+    echo "✓ Streaky updated successfully."
+    echo "Run: streaky"
+echo
+echo "Data directory: $HOME/.streaky"
+echo "Database:       $HOME/.streaky/streaky.db"
+else
+    echo "Nothing changed."
+fi

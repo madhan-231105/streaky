@@ -1,12 +1,16 @@
 [project]
-name = "kakarot-todo"
-version = "0.4.0"
-description = "A simple local-first TUI daily todo manager"
+name = "streaky"
+version = "0.6.2"
+description = "A terminal-first daily task manager with streaks, holidays, notes, and activity tracking."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "textual>=1.0",
+    "textual>=0.50",
 ]
 
 [project.scripts]
-kakarot-todo = "app:main"
+streaky = "app:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"

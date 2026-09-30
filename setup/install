@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+set -e
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT_DIR"
+
+echo "╭──────────────────────────────╮"
+echo "│        Streaky Setup         │"
+echo "╰──────────────────────────────╯"
+echo
+
+if ! command -v uv >/dev/null 2>&1; then
+    echo "uv is required to install Streaky."
+    read -r -p "Install uv now? [Y/n]: " answer
+    answer="${answer:-Y}"
+
+    if [[ "$answer" =~ ^[Yy]$ ]]; then
+        if command -v pacman >/dev/null 2>&1; then
+            sudo pacman -S --needed uv
+        else
+            echo "Please install uv manually: https://docs.astral.sh/uv/"
+            exit 1
+        fi
+    else
+        echo "Installation cancelled."
+        exit 1
+    fi
+fi
+
+if command -v streaky >/dev/null 2>&1; then
+    echo "Streaky is already installed."
+    installed_version="$(streaky --version 2>/dev/null || true)"
+    [[ -n "$installed_version" ]] && echo "Current: $installed_version"
+    echo
+    read -r -p "Update/reinstall Streaky from this source? [y/N]: " answer
+
+    if [[ "$answer" =~ ^[Yy]$ ]]; then
+        uv tool install --force .
+        echo
+        echo "✓ Streaky updated."
+    else
+        echo "Nothing changed."
+    fi
+else
+    echo "Streaky is not installed."
+    echo
+    read -r -p "Install Streaky now? [Y/n]: " answer
+    answer="${answer:-Y}"
+
+    if [[ "$answer" =~ ^[Yy]$ ]]; then
+        uv tool install .
+        echo
+        echo "✓ Streaky installed."
+    else
+        echo "Installation cancelled."
+        exit 1
+    fi
+fi
+
+echo
+echo "Run: streaky"
+echo
+echo "Data directory: $HOME/.streaky"
+echo "Database:       $HOME/.streaky/streaky.db"

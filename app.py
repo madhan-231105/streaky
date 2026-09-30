@@ -1,395 +1,297 @@
 from __future__ import annotations
 
-import calendar
 import sqlite3
 from datetime import date, datetime, timedelta
 from pathlib import Path
+import sys
 
-from rich.text import Text
 from textual.app import App, ComposeResult
-from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen, Screen
-from textual.widgets import Footer, Header, Input, Static
+from textual.widgets import Button, Checkbox, Footer, Header, Input, Label, ListItem, ListView, Static, TextArea
+
+APP_DIR = Path.home() / ".streaky"
+DB_PATH = APP_DIR / "streaky.db"
+DAYS_TO_GENERATE = 120
 
 
-APP_DIR = Path.home() / ".kakarot-todo"
-DB_PATH = APP_DIR / "todo.db"
+def fmt_day(value: date) -> str:
+    return value.isoformat()
 
 
 class TodoDB:
-    """Small SQLite database used by Kakarot Todo."""
+    """SQLite data layer for Streaky."""
 
-    def __init__(self, path: Path = DB_PATH):
+    def __init__(self, path: Path = DB_PATH) -> None:
         APP_DIR.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(path)
         self.conn.row_factory = sqlite3.Row
+        self._migrate()
+
+    def _migrate(self) -> None:
         self.conn.executescript(
             """
-            CREATE TABLE IF NOT EXISTS recurring (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                title TEXT NOT NULL,
-                recurrence TEXT NOT NULL DEFAULT 'daily',
-                active INTEGER NOT NULL DEFAULT 1
-            );
-
             CREATE TABLE IF NOT EXISTS tasks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 title TEXT NOT NULL,
                 due_date TEXT NOT NULL,
                 completed INTEGER NOT NULL DEFAULT 0,
-                recurring_id INTEGER,
-                created_at TEXT NOT NULL,
-                completed_at TEXT,
-                FOREIGN KEY(recurring_id) REFERENCES recurring(id)
+                recurring INTEGER NOT NULL DEFAULT 0,
+                notes TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL
             );
 
             CREATE TABLE IF NOT EXISTS holidays (
-                holiday_date TEXT PRIMARY KEY,
-                note TEXT
+                day TEXT PRIMARY KEY
             );
 
-            CREATE INDEX IF NOT EXISTS idx_tasks_due ON tasks(due_date);
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_recurring_daily_occurrence
-                ON tasks(recurring_id, due_date)
-                WHERE recurring_id IS NOT NULL;
+            CREATE TABLE IF NOT EXISTS recurring (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                notes TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL
+            );
             """
         )
-        self.ensure_recurring_occurrences()
 
-    # ---------- Tasks ----------
-
-    def ensure_recurring_occurrences(self, days: int = 120) -> None:
-        """Keep future daily occurrences available in the task table."""
-        today = date.today()
-        recurring = self.conn.execute(
-            "SELECT id, title, recurrence FROM recurring WHERE active = 1"
-        ).fetchall()
-
-        for item in recurring:
-            if item["recurrence"] != "daily":
-                continue
-
-            for offset in range(days):
-                due = today + timedelta(days=offset)
-                self.conn.execute(
-                    """
-                    INSERT OR IGNORE INTO tasks
-                    (title, due_date, completed, recurring_id, created_at)
-                    VALUES (?, ?, 0, ?, ?)
-                    """,
-                    (
-                        item["title"],
-                        due.isoformat(),
-                        item["id"],
-                        datetime.now().isoformat(timespec="seconds"),
-                    ),
-                )
-
+        columns = {
+            row["name"] for row in self.conn.execute("PRAGMA table_info(tasks)")
+        }
+        if "notes" not in columns:
+            self.conn.execute(
+                "ALTER TABLE tasks ADD COLUMN notes TEXT NOT NULL DEFAULT ''"
+            )
+        if "recurring" not in columns:
+            self.conn.execute(
+                "ALTER TABLE tasks ADD COLUMN recurring INTEGER NOT NULL DEFAULT 0"
+            )
         self.conn.commit()
 
-    def add_daily(self, title: str) -> None:
-        """Create a daily recurring task and its next 120 occurrences."""
-        cur = self.conn.execute(
-            "INSERT INTO recurring(title, recurrence) VALUES (?, 'daily')",
-            (title,),
-        )
-        recurring_id = cur.lastrowid
-        today = date.today()
+    def close(self) -> None:
+        self.conn.close()
 
-        for offset in range(120):
-            due = today + timedelta(days=offset)
+    def add_task(
+        self, title: str, due: date, recurring: bool = False, notes: str = ""
+    ) -> int:
+        cur = self.conn.execute(
+            """
+            INSERT INTO tasks(title, due_date, completed, recurring, notes, created_at)
+            VALUES (?, ?, 0, ?, ?, ?)
+            """,
+            (title, fmt_day(due), int(recurring), notes, datetime.now().isoformat()),
+        )
+        self.conn.commit()
+        return int(cur.lastrowid)
+
+    def add_daily(self, title: str, start: date, notes: str = "") -> None:
+        self.conn.execute(
+            "INSERT INTO recurring(title, notes, created_at) VALUES (?, ?, ?)",
+            (title, notes, datetime.now().isoformat()),
+        )
+
+        for offset in range(DAYS_TO_GENERATE):
+            day = start + timedelta(days=offset)
             self.conn.execute(
                 """
-                INSERT OR IGNORE INTO tasks
-                (title, due_date, recurring_id, created_at)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO tasks(title, due_date, completed, recurring, notes, created_at)
+                VALUES (?, ?, 0, 1, ?, ?)
                 """,
-                (
-                    title,
-                    due.isoformat(),
-                    recurring_id,
-                    datetime.now().isoformat(timespec="seconds"),
-                ),
+                (title, fmt_day(day), notes, datetime.now().isoformat()),
             )
+        self.conn.commit()
+
+    def ensure_recurring_future(self) -> None:
+        horizon = date.today() + timedelta(days=DAYS_TO_GENERATE)
+
+        for row in self.conn.execute(
+            "SELECT id, title, notes FROM recurring ORDER BY id"
+        ).fetchall():
+            last = self.conn.execute(
+                "SELECT MAX(due_date) AS d FROM tasks WHERE recurring=1 AND title=?",
+                (row["title"],),
+            ).fetchone()["d"]
+
+            start = date.fromisoformat(last) + timedelta(days=1) if last else date.today()
+
+            while start <= horizon:
+                self.conn.execute(
+                    """
+                    INSERT INTO tasks(title, due_date, completed, recurring, notes, created_at)
+                    VALUES (?, ?, 0, 1, ?, ?)
+                    """,
+                    (
+                        row["title"],
+                        fmt_day(start),
+                        row["notes"],
+                        datetime.now().isoformat(),
+                    ),
+                )
+                start += timedelta(days=1)
 
         self.conn.commit()
 
-    def add_one_time(self, title: str, due: date) -> None:
-        self.conn.execute(
-            """
-            INSERT INTO tasks(title, due_date, created_at)
-            VALUES (?, ?, ?)
-            """,
-            (title, due.isoformat(), datetime.now().isoformat(timespec="seconds")),
-        )
-        self.conn.commit()
-
-    def tasks_for(self, due: date):
+    def tasks_for(self, day: date):
         return self.conn.execute(
-            """
-            SELECT *
-            FROM tasks
-            WHERE due_date = ?
-            ORDER BY completed ASC, recurring_id IS NULL ASC, id ASC
-            """,
-            (due.isoformat(),),
+            "SELECT * FROM tasks WHERE due_date=? ORDER BY id",
+            (fmt_day(day),),
         ).fetchall()
 
-    def all_tasks(self):
-        """Return every task, ordered by date and completion state."""
+    def task(self, task_id: int):
         return self.conn.execute(
-            """
-            SELECT *
-            FROM tasks
-            ORDER BY due_date ASC, completed ASC, recurring_id IS NULL ASC, id ASC
-            """
-        ).fetchall()
-
-    def toggle(self, task_id: int) -> None:
-        row = self.conn.execute(
-            "SELECT completed FROM tasks WHERE id = ?",
-            (task_id,),
+            "SELECT * FROM tasks WHERE id=?", (task_id,)
         ).fetchone()
 
-        if not row:
-            return
+    def all_tasks(self):
+        return self.conn.execute(
+            "SELECT * FROM tasks ORDER BY due_date, id"
+        ).fetchall()
 
-        completed = 0 if row["completed"] else 1
-        completed_at = (
-            datetime.now().isoformat(timespec="seconds")
-            if completed
-            else None
-        )
-
+    def set_completed(self, task_id: int, completed: bool) -> None:
         self.conn.execute(
-            """
-            UPDATE tasks
-            SET completed = ?, completed_at = ?
-            WHERE id = ?
-            """,
-            (completed, completed_at, task_id),
+            "UPDATE tasks SET completed=? WHERE id=?",
+            (int(completed), task_id),
         )
         self.conn.commit()
 
     def delete_task(self, task_id: int) -> None:
-        self.conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+        self.conn.execute("DELETE FROM tasks WHERE id=?", (task_id,))
         self.conn.commit()
 
-    def counts_for_month(self, year: int, month: int):
-        """Return pending/completed counts for each date in a month."""
-        month_start = date(year, month, 1)
-        month_end = (
-            date(year + 1, 1, 1)
-            if month == 12
-            else date(year, month + 1, 1)
+    def update_notes(self, task_id: int, notes: str) -> None:
+        self.conn.execute(
+            "UPDATE tasks SET notes=? WHERE id=?", (notes, task_id)
+        )
+        self.conn.commit()
+
+    def is_holiday(self, day: date) -> bool:
+        return (
+            self.conn.execute(
+                "SELECT 1 FROM holidays WHERE day=?", (fmt_day(day),)
+            ).fetchone()
+            is not None
         )
 
+    def set_holiday(self, day: date) -> None:
+        self.conn.execute(
+            "INSERT OR IGNORE INTO holidays(day) VALUES (?)", (fmt_day(day),)
+        )
+        self.conn.commit()
+
+    def remove_holiday(self, day: date) -> None:
+        self.conn.execute(
+            "DELETE FROM holidays WHERE day=?", (fmt_day(day),)
+        )
+        self.conn.commit()
+
+    def holidays(self) -> set[date]:
+        return {
+            date.fromisoformat(row["day"])
+            for row in self.conn.execute("SELECT day FROM holidays")
+        }
+
+    def carry_pending_tasks_to_next_day(self, holiday: date) -> None:
+        next_day = holiday + timedelta(days=1)
+
+        for row in self.tasks_for(holiday):
+            if row["completed"]:
+                continue
+
+            # The next recurring occurrence already exists.
+            if row["recurring"]:
+                continue
+
+            self.conn.execute(
+                """
+                INSERT INTO tasks(title, due_date, completed, recurring, notes, created_at)
+                VALUES (?, ?, 0, 0, ?, ?)
+                """,
+                (
+                    row["title"],
+                    fmt_day(next_day),
+                    row["notes"],
+                    datetime.now().isoformat(),
+                ),
+            )
+            self.conn.execute("DELETE FROM tasks WHERE id=?", (row["id"],))
+
+        self.conn.commit()
+
+    def completion_counts(self, start: date, end: date) -> dict[date, int]:
         rows = self.conn.execute(
             """
-            SELECT
-                due_date,
-                SUM(CASE WHEN completed = 0 THEN 1 ELSE 0 END) AS pending,
-                SUM(CASE WHEN completed = 1 THEN 1 ELSE 0 END) AS completed
+            SELECT due_date, COUNT(*) AS n
             FROM tasks
-            WHERE due_date >= ? AND due_date < ?
+            WHERE completed=1 AND due_date BETWEEN ? AND ?
             GROUP BY due_date
             """,
-            (month_start.isoformat(), month_end.isoformat()),
+            (fmt_day(start), fmt_day(end)),
         ).fetchall()
 
         return {
-            row["due_date"]: (row["pending"], row["completed"])
+            date.fromisoformat(row["due_date"]): row["n"]
             for row in rows
         }
 
-    # ---------- Holidays ----------
-
-    def set_holiday(self, holiday: date, note: str = "") -> None:
-        self.conn.execute(
+    def active_days(self, start: date, end: date) -> set[date]:
+        rows = self.conn.execute(
             """
-            INSERT INTO holidays(holiday_date, note)
-            VALUES (?, ?)
-            ON CONFLICT(holiday_date)
-            DO UPDATE SET note = excluded.note
-            """,
-            (holiday.isoformat(), note),
-        )
-        self.conn.commit()
-
-    def remove_holiday(self, holiday: date) -> None:
-        self.conn.execute(
-            "DELETE FROM holidays WHERE holiday_date = ?",
-            (holiday.isoformat(),),
-        )
-        self.conn.commit()
-
-    def carry_pending_tasks_to_next_day(self, holiday: date) -> int:
-        """Carry incomplete tasks from a holiday to the following day.
-
-        Recurring tasks already have a next-day occurrence, so their holiday
-        occurrence is removed instead of creating a duplicate.
-        """
-        next_day = holiday + timedelta(days=1)
-
-        tasks = self.conn.execute(
-            """
-            SELECT *
+            SELECT due_date
             FROM tasks
-            WHERE due_date = ? AND completed = 0
-            ORDER BY id
+            WHERE completed=1 AND due_date BETWEEN ? AND ?
+            GROUP BY due_date
             """,
-            (holiday.isoformat(),),
+            (fmt_day(start), fmt_day(end)),
         ).fetchall()
 
-        moved = 0
-
-        for task in tasks:
-            if task["recurring_id"] is not None:
-                # The normal recurring occurrence for the next day already
-                # exists. Remove only the holiday occurrence.
-                self.conn.execute(
-                    "DELETE FROM tasks WHERE id = ?",
-                    (task["id"],),
-                )
-            else:
-                self.conn.execute(
-                    "UPDATE tasks SET due_date = ? WHERE id = ?",
-                    (next_day.isoformat(), task["id"]),
-                )
-
-            moved += 1
-
-        self.conn.commit()
-        return moved
-
-    def is_holiday(self, holiday: date) -> bool:
-        row = self.conn.execute(
-            "SELECT 1 FROM holidays WHERE holiday_date = ?",
-            (holiday.isoformat(),),
-        ).fetchone()
-        return row is not None
-
-    # ---------- Statistics ----------
-
-    def stats(self):
-        today = date.today().isoformat()
-
-        pending = self.conn.execute(
-            """
-            SELECT COUNT(*) AS n
-            FROM tasks
-            WHERE due_date = ? AND completed = 0
-            """,
-            (today,),
-        ).fetchone()["n"]
-
-        completed = self.conn.execute(
-            """
-            SELECT COUNT(*) AS n
-            FROM tasks
-            WHERE due_date = ? AND completed = 1
-            """,
-            (today,),
-        ).fetchone()["n"]
-
-        return pending, completed
+        return {date.fromisoformat(row["due_date"]) for row in rows}
 
 
-class CalendarWidget(Static):
-    """Month calendar displayed on the right side of the main page."""
+class ConfirmDelete(ModalScreen[bool]):
+    BINDINGS = [("escape", "cancel", "Cancel")]
 
-    def __init__(self, app: "KakarotTodo"):
+    def __init__(self, title: str) -> None:
         super().__init__()
-        self.todo_app = app
-
-    def render(self) -> Text:
-        app = self.todo_app
-        year = app.calendar_month.year
-        month = app.calendar_month.month
-
-        task_counts = app.db.counts_for_month(year, month)
-        weeks = calendar.monthcalendar(year, month)
-
-        output = Text()
-        title = f"{calendar.month_name[month]} {year}"
-        output.append(title.center(28) + "\n", style="bold")
-        output.append("Mo Tu We Th Fr Sa Su\n", style="dim")
-
-        for week in weeks:
-            for day in week:
-                if day == 0:
-                    output.append("   ")
-                    continue
-
-                current = date(year, month, day)
-                key = current.isoformat()
-                pending, completed = task_counts.get(key, (0, 0))
-
-                selected = current == app.selected_date
-                today = current == date.today()
-                holiday = app.db.is_holiday(current)
-
-                label = f"{day:2d}"
-
-                # Holidays get a subtle light-red background.
-                if selected and holiday:
-                    style = "bold black on #8f4f4f"
-                    output.append(f"[{label}]", style=style)
-                elif selected:
-                    output.append(f"[{label}]", style="bold reverse")
-                elif holiday:
-                    output.append(label, style="bold black on #8f4f4f")
-                elif today:
-                    output.append(label, style="bold underline")
-                elif pending:
-                    output.append(label, style="bold")
-                else:
-                    output.append(label)
-
-                output.append(" ")
-
-            output.append("\n")
-
-        output.append("\n")
-        output.append("● ", style="bold")
-        output.append("tasks due  ")
-        output.append("✓ ", style="bold")
-        output.append("completed  ")
-        output.append("■ ", style="bold black on #8f4f4f")
-        output.append("holiday  ")
-        output.append("[] ", style="reverse")
-        output.append("selected")
-
-        return output
-
-
-class HolidayCarryDialog(ModalScreen):
-    """Ask whether incomplete tasks should move to the next day."""
-
-    BINDINGS = [
-        ("y", "carry", "Yes"),
-        ("n", "keep", "No"),
-        ("escape", "keep", "No"),
-    ]
-
-    def __init__(self, holiday: date):
-        super().__init__()
-        self.holiday = holiday
+        self.title = title
 
     def compose(self) -> ComposeResult:
-        with Vertical(id="holiday_dialog"):
-            yield Static(
-                f"Mark {self.holiday.strftime('%d %B %Y')} as a holiday?",
-                id="holiday_title",
-            )
-            yield Static(
-                "Move incomplete tasks to the next day?",
-                id="holiday_question",
-            )
-            yield Static(
-                "Y = Yes, carry tasks    N / Esc = No, keep tasks",
-                id="holiday_help",
-            )
+        yield Vertical(
+            Label(f'Delete "{self.title}"?'),
+            Label("This cannot be undone."),
+            Horizontal(
+                Button("Delete", id="yes", variant="error"),
+                Button("Cancel", id="no"),
+                classes="modal-buttons",
+            ),
+            id="dialog",
+        )
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.dismiss(event.button.id == "yes")
+
+    def action_cancel(self) -> None:
+        self.dismiss(False)
+
+
+class HolidayCarryDialog(ModalScreen[bool]):
+    BINDINGS = [
+        ("y", "carry", "Carry"),
+        ("n", "keep", "Keep"),
+        ("escape", "keep", "Keep"),
+    ]
+
+    def compose(self) -> ComposeResult:
+        yield Vertical(
+            Label("Mark this day as a holiday?"),
+            Label("Carry unfinished tasks to the next day?"),
+            Horizontal(
+                Button("Yes", id="yes"),
+                Button("No", id="no"),
+            ),
+            id="dialog",
+        )
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.dismiss(event.button.id == "yes")
 
     def action_carry(self) -> None:
         self.dismiss(True)
@@ -398,456 +300,467 @@ class HolidayCarryDialog(ModalScreen):
         self.dismiss(False)
 
 
+class AddTaskDialog(ModalScreen[tuple[str, bool] | None]):
+    BINDINGS = [("escape", "cancel", "Cancel")]
+
+    def compose(self) -> ComposeResult:
+        yield Vertical(
+            Label("Add task"),
+            Input(placeholder="Task title", id="title"),
+            Checkbox("Repeat every day", id="recurring"),
+            Horizontal(
+                Button("Add", id="add", variant="success"),
+                Button("Cancel", id="cancel"),
+            ),
+            id="dialog",
+        )
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "cancel":
+            self.dismiss(None)
+            return
+
+        title = self.query_one("#title", Input).value.strip()
+        if title:
+            self.dismiss(
+                (title, self.query_one("#recurring", Checkbox).value)
+            )
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
 
 
 class AllTasksScreen(Screen):
-    """Separate page containing every stored task."""
-
     BINDINGS = [
         ("escape", "back", "Back"),
         ("q", "back", "Back"),
         ("l", "back", "Back"),
     ]
 
-    def __init__(self, db: TodoDB):
+    def __init__(self, db: TodoDB) -> None:
         super().__init__()
         self.db = db
 
     def compose(self) -> ComposeResult:
-        yield Header(show_clock=True)
-
-        with Vertical(id="all_tasks_page"):
-            yield Static("All Tasks", id="all_tasks_title")
-            yield Static(
-                "All tasks • grouped by date • Esc / q / l to return",
-                id="all_tasks_subtitle",
-            )
-            yield VerticalScroll(id="all_tasks_list")
-
+        yield Header()
+        yield Label("All Tasks", id="screen-title")
+        yield ListView(id="all-task-list")
         yield Footer()
 
     def on_mount(self) -> None:
         self.refresh_tasks()
 
     def refresh_tasks(self) -> None:
-        task_list = self.query_one("#all_tasks_list", VerticalScroll)
-        task_list.remove_children()
+        view = self.query_one("#all-task-list", ListView)
+        view.clear()
 
-        tasks = self.db.all_tasks()
+        current_day = None
+        for row in self.db.all_tasks():
+            due = date.fromisoformat(row["due_date"])
 
-        if not tasks:
-            task_list.mount(
-                Static(
-                    "No tasks yet.",
-                    classes="all_task_row",
+            if due != current_day:
+                current_day = due
+                view.append(
+                    ListItem(Label(f"── {due:%a, %d %b %Y} ──"))
                 )
+
+            mark = "✓" if row["completed"] else "○"
+            repeat = " ↻" if row["recurring"] else ""
+            view.append(
+                ListItem(Label(f"{mark} {row['title']}{repeat}"))
             )
-            return
-
-        current_date = None
-
-        for task in tasks:
-            task_date = date.fromisoformat(task["due_date"])
-
-            if task_date != current_date:
-                current_date = task_date
-                holiday_text = "  • HOLIDAY" if self.db.is_holiday(task_date) else ""
-
-                task_list.mount(
-                    Static(
-                        f"{task_date.strftime('%A, %d %B %Y')}{holiday_text}",
-                        classes="date_group",
-                    )
-                )
-
-            prefix = "✓" if task["completed"] else "☐"
-            recurring = "  🔁 daily" if task["recurring_id"] else ""
-            text = f"{prefix}  {task['title']}{recurring}"
-
-            classes = "all_task_row"
-            if task["completed"]:
-                classes += " completed"
-
-            task_list.mount(Static(text, classes=classes))
 
     def action_back(self) -> None:
         self.app.pop_screen()
 
 
-class KakarotTodo(App):
-    TITLE = "Kakarot Todo"
+class Streaky(App):
+    TITLE = "Streaky"
+    SUB_TITLE = "Tasks • streaks • progress"
 
     CSS = """
     Screen {
-        background: #0b0b0b;
-        color: #e8e8e8;
+        background: $surface;
     }
 
     #main {
         height: 1fr;
     }
 
-    #tasks_panel {
+    #tasks-panel {
         width: 60%;
-        border: round #444444;
-        padding: 1 2;
+        border: round $accent;
+        padding: 1;
     }
 
-    #calendar_panel {
+    #right-panel {
         width: 40%;
-        border: round #444444;
-        padding: 1 2;
+        border: round $accent;
+        padding: 1;
     }
 
-    #task_header {
-        height: 3;
-        text-style: bold;
-    }
-
-    #task_list {
+    #task-list {
         height: 1fr;
     }
 
-    .task_row {
-        height: 2;
-        padding: 0 1;
+    #calendar {
+        height: 14;
+        border: round $secondary;
+        padding: 1;
     }
 
-    .selected_task {
-        background: #333333;
-        color: white;
-        text-style: bold;
-    }
-
-    .completed {
-        color: #777777;
-        text-style: strike;
-    }
-
-    #add_input {
-        display: none;
-        height: 3;
+    #notes-label {
         margin-top: 1;
     }
 
-    #status {
-        height: 3;
-        border-top: solid #444444;
-        padding: 0 2;
-        content-align: center middle;
+    #notes {
+        height: 7;
+        border: round $secondary;
     }
 
-    /* ---------- Holiday confirmation ---------- */
+    #streak {
+        height: 3;
+        content-align: center middle;
+        text-style: bold;
+    }
 
-    HolidayCarryDialog {
+    #heatmap {
+        height: 9;
+        border: round $secondary;
+        padding: 1;
+    }
+
+    #dialog {
+        width: 60;
+        max-width: 90%;
+        height: auto;
+        padding: 1 2;
+        border: round $accent;
+        background: $surface;
         align: center middle;
-        background: rgba(0, 0, 0, 0.65);
     }
 
-    #holiday_dialog {
-        width: 62;
-        height: 12;
-        border: round #8f4f4f;
-        background: #161616;
-        padding: 1 2;
-        content-align: center middle;
-    }
-
-    #holiday_title {
-        height: 2;
-        text-style: bold;
-        content-align: center middle;
-    }
-
-    #holiday_question {
+    .modal-buttons {
         height: 3;
-        content-align: center middle;
+        align-horizontal: center;
     }
 
-    #holiday_help {
-        height: 2;
-        color: #999999;
-        content-align: center middle;
-    }
-
-    /* ---------- All Tasks page ---------- */
-
-    #all_tasks_page {
-        height: 1fr;
-        padding: 1 2;
-    }
-
-    #all_tasks_title {
-        height: 3;
+    #screen-title {
+        padding: 1;
         text-style: bold;
-        content-align: center middle;
-    }
-
-    #all_tasks_subtitle {
-        height: 2;
-        color: #999999;
-        content-align: center middle;
-    }
-
-    #all_tasks_list {
-        height: 1fr;
-        border: round #444444;
-        padding: 0 1;
-    }
-
-    .date_group {
-        height: 2;
-        margin-top: 1;
-        color: #e8e8e8;
-        text-style: bold;
-        padding: 0 1;
-    }
-
-    .all_task_row {
-        height: 2;
-        padding: 0 2;
-    }
-
-    Footer {
-        background: #111111;
     }
     """
 
     BINDINGS = [
+        ("a", "add", "Add"),
+        ("d", "delete", "Delete"),
+        ("h", "holiday", "Holiday"),
+        ("l", "all_tasks", "All tasks"),
+        ("space", "toggle", "Complete"),
+        ("ctrl+s", "save_notes", "Save notes"),
+        ("left", "prev_day", "Previous day"),
+        ("right", "next_day", "Next day"),
         ("q", "quit", "Quit"),
-        ("up", "prev_task", "Task ↑"),
-        ("down", "next_task", "Task ↓"),
-        ("space", "toggle_task", "Complete"),
-        ("left", "prev_day", "Date ←"),
-        ("right", "next_day", "Date →"),
-        ("pageup", "prev_month", "Month ←"),
-        ("pagedown", "next_month", "Month →"),
-        ("a", "add_task", "Add"),
-        ("d", "delete_task", "Delete"),
-        ("h", "toggle_holiday", "Holiday"),
-        ("l", "all_tasks", "All Tasks"),
-        ("t", "today", "Today"),
     ]
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.db = TodoDB()
-        self.selected_date = date.today()
-        self.calendar_month = date.today().replace(day=1)
-        self.selected_task_index = 0
+        self.selected_day = date.today()
+        self.selected_task_id: int | None = None
 
     def compose(self) -> ComposeResult:
-        yield Header(show_clock=True)
+        yield Header()
 
         with Horizontal(id="main"):
-            with Vertical(id="tasks_panel"):
-                yield Static(id="task_header")
-                yield VerticalScroll(id="task_list")
-                yield Input(
-                    placeholder="Type task and press Enter (prefix 'daily:' for recurring)",
-                    id="add_input",
-                )
+            with Vertical(id="tasks-panel"):
+                yield Label("", id="day-title")
+                yield ListView(id="task-list")
 
-            with Vertical(id="calendar_panel"):
-                yield CalendarWidget(self)
-                yield Static(id="status")
+            with Vertical(id="right-panel"):
+                yield Static("", id="streak")
+                yield Static("", id="heatmap")
+                yield Static("", id="calendar")
+                yield Label("Notes for selected task", id="notes-label")
+                yield TextArea("", id="notes")
 
         yield Footer()
 
     def on_mount(self) -> None:
-        self.refresh_view()
+        self.db.ensure_recurring_future()
+        self.refresh()
 
-    def refresh_view(self) -> None:
-        tasks = self.db.tasks_for(self.selected_date)
+    def refresh(self) -> None:
+        self.refresh_tasks()
+        self.refresh_calendar()
+        self.refresh_heatmap()
+        self.refresh_streak()
+        self.refresh_notes()
 
-        header = self.query_one("#task_header", Static)
-        holiday_text = "  • HOLIDAY" if self.db.is_holiday(self.selected_date) else ""
-        header.update(
-            f"{self.selected_date.strftime('%A, %d %B %Y')}{holiday_text}\n"
-            "Today-first task list"
+    def refresh_tasks(self) -> None:
+        title = self.query_one("#day-title", Label)
+        title.update(
+            f"{self.selected_day:%A, %d %B %Y}"
+            + ("  [HOLIDAY]" if self.db.is_holiday(self.selected_day) else "")
         )
 
-        task_list = self.query_one("#task_list", VerticalScroll)
-        task_list.remove_children()
+        view = self.query_one("#task-list", ListView)
+        view.clear()
+        rows = self.db.tasks_for(self.selected_day)
+        self.selected_task_id = None
 
-        if not tasks:
-            task_list.mount(
-                Static(
-                    "No tasks for this date.\nPress 'a' to add one.",
-                    classes="task_row",
-                )
+        for row in rows:
+            mark = "✓" if row["completed"] else "○"
+            repeat = " ↻" if row["recurring"] else ""
+
+            item = ListItem(
+                Label(f"{mark} {row['title']}{repeat}")
             )
-        else:
-            for index, task in enumerate(tasks):
-                prefix = "✓" if task["completed"] else "☐"
-                recurring = "  🔁 daily" if task["recurring_id"] else ""
-                text = f"{prefix}  {task['title']}{recurring}"
+            item.data = row["id"]  # type: ignore[attr-defined]
+            view.append(item)
 
-                classes = "task_row"
-                if task["completed"]:
-                    classes += " completed"
-                if index == self.selected_task_index:
-                    classes += " selected_task"
+        if rows:
+            self.selected_task_id = rows[0]["id"]
+            view.index = 0
 
-                task_list.mount(Static(text, classes=classes))
+    def refresh_notes(self) -> None:
+        area = self.query_one("#notes", TextArea)
+        area.load_text("")
 
-        pending, completed = self.db.stats()
-        status = self.query_one("#status", Static)
-        status.update(
-            f"Today: {completed} completed  •  {pending} pending"
-            "   |  ←→ date  ↑↓ task  Space complete"
-            "  a add  h holiday  l all tasks"
+        if self.selected_task_id is not None:
+            row = self.db.task(self.selected_task_id)
+            if row:
+                area.load_text(row["notes"])
+
+    def refresh_calendar(self) -> None:
+        widget = self.query_one("#calendar", Static)
+
+        start = self.selected_day - timedelta(days=self.selected_day.weekday())
+        lines = ["Mon  Tue  Wed  Thu  Fri  Sat  Sun"]
+
+        for week in range(5):
+            parts = []
+
+            for col in range(7):
+                day = start + timedelta(days=week * 7 + col)
+                rows = self.db.tasks_for(day)
+                count = len(rows)
+                done = sum(row["completed"] for row in rows)
+
+                if self.db.is_holiday(day):
+                    token = f"[#ff7777]{day.day:2}H[/#ff7777]"
+                elif day == self.selected_day:
+                    token = f"[bold reverse]{day.day:2}[/bold reverse]"
+                elif count and done == count:
+                    token = f"[green]{day.day:2}✓[/green]"
+                elif count:
+                    token = f"{day.day:2}•"
+                else:
+                    token = f"{day.day:2} "
+
+                parts.append(token)
+
+            lines.append("  ".join(parts))
+
+        widget.update("\n".join(lines))
+
+    def refresh_heatmap(self) -> None:
+        end = date.today()
+        start = end - timedelta(days=83)
+        counts = self.db.completion_counts(start, end)
+
+        lines = ["Activity — last 12 weeks"]
+
+        for row in range(7):
+            cells = []
+
+            for col in range(12):
+                day = start + timedelta(days=col * 7 + row)
+                cells.append(self.level_cell(counts.get(day, 0)))
+
+            lines.append(" ".join(cells))
+
+        self.query_one("#heatmap", Static).update("\n".join(lines))
+
+    @staticmethod
+    def level_cell(count: int) -> str:
+        if count == 0:
+            return "[#303030]■[/#303030]"
+        if count == 1:
+            return "[#6b7280]■[/#6b7280]"
+        if count == 2:
+            return "[#9ca3af]■[/#9ca3af]"
+        if count <= 4:
+            return "[#d1d5db]■[/#d1d5db]"
+        return "[bold #ffffff]■[/bold #ffffff]"
+
+    def refresh_streak(self) -> None:
+        completed = self.db.active_days(
+            date.today() - timedelta(days=365),
+            date.today(),
+        )
+        holidays = self.db.holidays()
+
+        streak = 0
+        cursor = date.today()
+
+        while cursor >= date.today() - timedelta(days=365):
+            if cursor in holidays:
+                cursor -= timedelta(days=1)
+                continue
+
+            if cursor in completed:
+                streak += 1
+                cursor -= timedelta(days=1)
+                continue
+
+            break
+
+        self.query_one("#streak", Static).update(
+            f"🔥 Current streak: {streak} day(s)"
         )
 
-        self.query_one(CalendarWidget).refresh()
+    def on_list_view_selected(self, event: ListView.Selected) -> None:
+        task_id = getattr(event.item, "data", None)
 
-    def current_tasks(self):
-        return self.db.tasks_for(self.selected_date)
+        if task_id is not None:
+            self.selected_task_id = int(task_id)
+            self.refresh_notes()
 
-    # ---------- Task navigation ----------
-
-    def action_prev_task(self) -> None:
-        tasks = self.current_tasks()
-        if tasks:
-            self.selected_task_index = max(0, self.selected_task_index - 1)
-            self.refresh_view()
-
-    def action_next_task(self) -> None:
-        tasks = self.current_tasks()
-        if tasks:
-            self.selected_task_index = min(
-                len(tasks) - 1,
-                self.selected_task_index + 1,
-            )
-            self.refresh_view()
-
-    def action_toggle_task(self) -> None:
-        tasks = self.current_tasks()
-        if not tasks:
+    def action_toggle(self) -> None:
+        if self.selected_task_id is None:
             return
 
-        task = tasks[self.selected_task_index]
-        self.db.toggle(task["id"])
-        self.refresh_view()
+        row = self.db.task(self.selected_task_id)
 
-    # ---------- Date navigation ----------
+        if row:
+            self.db.set_completed(
+                self.selected_task_id,
+                not bool(row["completed"]),
+            )
+            self.refresh()
 
-    def move_date(self, delta: int) -> None:
-        self.selected_date += timedelta(days=delta)
-        self.calendar_month = self.selected_date.replace(day=1)
-        self.selected_task_index = 0
-        self.refresh_view()
+    def action_add(self) -> None:
+        def done(result: tuple[str, bool] | None) -> None:
+            if not result:
+                return
+
+            title, recurring = result
+
+            if recurring:
+                self.db.add_daily(title, self.selected_day)
+            else:
+                self.db.add_task(title, self.selected_day)
+
+            self.refresh()
+
+        self.push_screen(AddTaskDialog(), done)
+
+    def action_delete(self) -> None:
+        if self.selected_task_id is None:
+            return
+
+        row = self.db.task(self.selected_task_id)
+
+        if not row:
+            return
+
+        def done(confirmed: bool) -> None:
+            if confirmed and self.selected_task_id is not None:
+                self.db.delete_task(self.selected_task_id)
+                self.refresh()
+
+        self.push_screen(
+            ConfirmDelete(row["title"]),
+            done,
+        )
+
+    def action_holiday(self) -> None:
+        if self.db.is_holiday(self.selected_day):
+            self.db.remove_holiday(self.selected_day)
+            self.refresh()
+            return
+
+        def done(carry: bool) -> None:
+            self.db.set_holiday(self.selected_day)
+
+            if carry:
+                self.db.carry_pending_tasks_to_next_day(
+                    self.selected_day
+                )
+
+            self.refresh()
+
+        self.push_screen(
+            HolidayCarryDialog(),
+            done,
+        )
+
+    def action_save_notes(self) -> None:
+        if self.selected_task_id is None:
+            return
+
+        notes = self.query_one("#notes", TextArea).text
+        self.db.update_notes(self.selected_task_id, notes)
+        self.notify("Notes saved.")
 
     def action_prev_day(self) -> None:
-        self.move_date(-1)
+        self.selected_day -= timedelta(days=1)
+        self.refresh()
 
     def action_next_day(self) -> None:
-        self.move_date(1)
-
-    def action_prev_month(self) -> None:
-        first = self.calendar_month
-
-        if first.month == 1:
-            self.calendar_month = date(first.year - 1, 12, 1)
-        else:
-            self.calendar_month = date(first.year, first.month - 1, 1)
-
-        self.query_one(CalendarWidget).refresh()
-
-    def action_next_month(self) -> None:
-        first = self.calendar_month
-
-        if first.month == 12:
-            self.calendar_month = date(first.year + 1, 1, 1)
-        else:
-            self.calendar_month = date(first.year, first.month + 1, 1)
-
-        self.query_one(CalendarWidget).refresh()
-
-    def action_today(self) -> None:
-        self.selected_date = date.today()
-        self.calendar_month = date.today().replace(day=1)
-        self.selected_task_index = 0
-        self.refresh_view()
-
-    # ---------- Add task ----------
-
-    def action_add_task(self) -> None:
-        input_box = self.query_one("#add_input", Input)
-        input_box.display = True
-        input_box.focus()
-
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        value = event.value.strip()
-
-        event.input.value = ""
-        event.input.display = False
-
-        if not value:
-            self.refresh_view()
-            return
-
-        if value.lower().startswith("daily:"):
-            title = value[6:].strip()
-            if title:
-                self.db.add_daily(title)
-        else:
-            self.db.add_one_time(value, self.selected_date)
-
-        self.selected_task_index = 0
-        self.refresh_view()
-
-    # ---------- Holiday ----------
-
-    def action_toggle_holiday(self) -> None:
-        if self.db.is_holiday(self.selected_date):
-            self.db.remove_holiday(self.selected_date)
-            self.refresh_view()
-            return
-
-        holiday = self.selected_date
-
-        def handle_carry(carry_tasks: bool) -> None:
-            self.db.set_holiday(holiday)
-
-            if carry_tasks:
-                moved = self.db.carry_pending_tasks_to_next_day(holiday)
-                self.notify(
-                    f"Holiday marked. {moved} incomplete task(s) carried to "
-                    f"{(holiday + timedelta(days=1)).strftime('%d %B')}."
-                )
-            else:
-                self.notify("Holiday marked. Tasks stay on this date.")
-
-            self.selected_task_index = 0
-            self.refresh_view()
-
-        self.push_screen(HolidayCarryDialog(holiday), handle_carry)
-
-    # ---------- Delete ----------
-
-    def action_delete_task(self) -> None:
-        tasks = self.current_tasks()
-        if not tasks:
-            return
-
-        task = tasks[self.selected_task_index]
-        self.db.delete_task(task["id"])
-
-        self.selected_task_index = max(
-            0,
-            self.selected_task_index - 1,
-        )
-        self.refresh_view()
-
-    # ---------- All tasks page ----------
+        self.selected_day += timedelta(days=1)
+        self.refresh()
 
     def action_all_tasks(self) -> None:
         self.push_screen(AllTasksScreen(self.db))
 
+    def on_unmount(self) -> None:
+        self.db.close()
+
+
+def show_storage() -> None:
+    """Show the same kind of useful storage information users expect from Taskwarrior."""
+    print("Streaky storage")
+    print("----------------")
+    print(f"Data directory : {APP_DIR}")
+    print(f"Database       : {DB_PATH}")
+    exists = "yes" if DB_PATH.exists() else "no"
+    print(f"Database exists: {exists}")
+    print()
+    print("Source/config")
+    print("-------------")
+    print("Application    : installed through uv tool")
+    print("Project source : the directory from which Streaky was installed")
+    print()
+    print("Commands")
+    print("--------")
+    print("streaky        Start the TUI")
+    print("streaky show   Show storage information")
+
 
 def main() -> None:
-    KakarotTodo().run()
+    if len(sys.argv) > 1:
+        command = sys.argv[1].lower()
+
+        if command in {"show", "info", "--show"}:
+            show_storage()
+            return
+
+        if command in {"--version", "-V", "version"}:
+            print("Streaky 0.6.2")
+            return
+
+        if command in {"--help", "-h", "help"}:
+            print("Streaky - terminal-first daily task manager")
+            print()
+            print("Usage:")
+            print("  streaky        Start the TUI")
+            print("  streaky show   Show storage information")
+            print("  streaky --version")
+            return
+
+    Streaky().run()
 
 
 if __name__ == "__main__":

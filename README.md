@@ -1,258 +1,269 @@
 # Streaky
 
-**Streaky** is a terminal-first daily task manager built with **Python, Textual, and SQLite**.
+**Your tasks. Your streak. Your progress.**
 
-It combines a simple daily task list with:
+Streaky is a simple terminal-based daily task manager that helps you keep track of your tasks and build consistent habits.
 
-- daily and recurring tasks
-- task completion tracking
-- a GitHub-style activity heatmap
-- current streak tracking
-- holidays that do not break a streak
-- optional task notes
-- delete confirmation
-- an all-tasks screen
-- a local SQLite database
-
-> **Streaky — Your tasks. Your streak. Your progress.**
+It works completely locally, so your tasks stay on your computer.
 
 ## Features
 
-### Daily and recurring tasks
+* 📋 Daily tasks
+* 🔁 Daily recurring tasks
+* ✓ Task completion tracking
+* 🔥 Current streak
+* 🏖️ Holidays that don't break your streak
+* 📝 Notes for tasks
+* 📊 12-week activity graph
+* 📅 Calendar view
+* 📚 All tasks view
+* 💾 Local data storage
+* 🖥️ Terminal-based interface
 
-Press `a` to add a task.
+## Getting Started
 
-The add dialog lets you choose:
+### Add a task
 
-- **One-time** — creates a task for the selected day.
-- **Repeat every day** — creates daily occurrences for the task.
+Press:
 
-### Completion tracking
+```text
+a
+```
 
-Select a task and press `Space` to toggle completion.
+Enter your task and choose whether it should repeat every day.
 
-Completed tasks are shown with `✓`.
+You can create:
 
-### Delete confirmation
+* **One-time tasks** — appear only on the selected day
+* **Daily tasks** — repeat every day
 
-Press `d`.
+### Complete a task
 
-Streaky asks for confirmation before deleting the selected task.
+Select a task and press:
 
-### Holidays
+```text
+Space
+```
 
-Press `h` on the selected day.
+Completed tasks are shown with:
 
-Streaky asks:
+```text
+✓
+```
+
+Press `Space` again to mark the task as incomplete.
+
+### Delete a task
+
+Select a task and press:
+
+```text
+d
+```
+
+Streaky will ask for confirmation before deleting it.
+
+## Holidays
+
+Have a day off?
+
+Press:
+
+```text
+h
+```
+
+Streaky will ask:
 
 ```text
 Mark this day as a holiday?
 Carry unfinished tasks to the next day?
 ```
 
-Choose:
+Choose **Yes** to move unfinished one-time tasks to tomorrow.
 
-- **Yes** — unfinished one-time tasks are moved to tomorrow.
-- **No** — unfinished tasks remain on the holiday.
-- `Esc` — same as No.
+Choose **No** to leave them on the holiday.
 
-Recurring tasks are not duplicated because the next recurring occurrence already exists.
+Holiday days don't break your streak.
 
-Holiday days are skipped when calculating the current streak, so a planned day off does not break your streak.
-
-### Task notes
-
-Select a task and edit the **Notes for selected task** field below the calendar.
-
-Press `Ctrl+S` to save the notes.
-
-Notes are stored locally in SQLite.
-
-### GitHub-style activity
-
-The dashboard contains a 12-week contribution-style activity graph.
-
-Each square represents one day. The activity level is based on the number of tasks completed that day.
-
-This is inspired by GitHub's contribution graph; it does not connect to GitHub.
-
-### Streak
-
-The current streak counts consecutive non-holiday days with at least one completed task.
-
-Example:
+For example:
 
 ```text
-Mon  completed
-Tue  completed
-Wed  holiday
-Thu  completed
-Fri  completed
+Monday     ✓
+Tuesday    ✓
+Wednesday  Holiday
+Thursday   ✓
+Friday     ✓
 ```
 
-The current streak is `4`, because the holiday is skipped.
-
-## Keyboard shortcuts
-
-| Key | Action |
-|---|---|
-| `a` | Add task |
-| `d` | Delete selected task |
-| `h` | Mark/unmark holiday |
-| `Space` | Complete/uncomplete selected task |
-| `Ctrl+S` | Save task notes |
-| `←` | Previous day |
-| `→` | Next day |
-| `l` | Open all tasks |
-| `Esc` | Leave All Tasks |
-| `q` | Quit |
-
-## Requirements
-
-- Python 3.10+
-- Textual
-- SQLite
-
-SQLite is normally included with Python.
-
-## Setup
-
-Streaky uses the `setup/` scripts for installation and updates.
-
-### Install
-
-From the project directory:
-
-```bash
-./setup/install
-```
-
-The installer:
-
-1. Checks whether `uv` is installed.
-2. Offers to install `uv` if it is missing.
-3. Checks whether the `streaky` command is already installed.
-4. If Streaky is already installed, asks whether it should be updated.
-5. Otherwise, asks whether Streaky should be installed.
-
-After installation:
-
-```bash
-streaky
-```
-
-### Update
-
-Run:
-
-```bash
-./setup/update
-```
-
-The updater:
-
-1. Checks whether `uv` is available.
-2. Checks whether the `streaky` command exists.
-3. If Streaky is not installed, asks whether to install it.
-4. If Streaky is installed, asks whether to update it.
-5. Reinstalls the current source with `uv tool install --force .`.
-
-### Setup layout
+Your streak is:
 
 ```text
-setup/
-├── install
-└── update
+🔥 4 days
 ```
 
-This keeps installation and update commands separate while keeping all setup logic inside the `setup/` directory.
+Recurring tasks aren't copied when tasks are carried forward because their next occurrence already exists.
+
+Press `h` again to remove a holiday.
+
+## Task Notes
+
+Select a task and use the notes area below the calendar to add or edit notes.
+
+Press:
+
+```text
+Ctrl+S
+```
+
+to save your notes.
+
+## Activity
+
+Streaky includes a 12-week activity graph showing how many tasks you've completed each day.
+
+More completed tasks on a day means a higher activity level.
+
+```text
+■ ■ ■ ■ ■ ■ ■
+■ ■ ■ ■ ■ ■ ■
+■ ■ ■ ■ ■ ■ ■
+```
+
+The graph is inspired by GitHub's contribution graph, but Streaky does **not** connect to GitHub.
+
+## Your Streak
+
+Your current streak counts consecutive days where you completed at least one task.
+
+Holiday days are skipped.
+
+A day without any completed task breaks the streak.
+
+## Calendar
+
+Use the calendar to quickly see your progress.
+
+The calendar shows:
+
+* **Selected day**
+* **Holiday**
+* **Completed days**
+* **Days with tasks**
+* **Empty days**
+
+Use the arrow keys to move between days.
+
+```text
+← Previous day
+→ Next day
+```
+
+## All Tasks
+
+Press:
+
+```text
+l
+```
+
+to see all your tasks grouped by date.
+
+Press:
+
+```text
+Esc
+```
+
+to return to the main screen.
+
+## Keyboard Shortcuts
+
+| Key      | Action                   |
+| -------- | ------------------------ |
+| `a`      | Add task                 |
+| `d`      | Delete task              |
+| `h`      | Mark/unmark holiday      |
+| `Space`  | Complete/uncomplete task |
+| `Ctrl+S` | Save notes               |
+| `←`      | Previous day             |
+| `→`      | Next day                 |
+| `l`      | View all tasks           |
+| `Esc`    | Go back / cancel         |
+| `q`      | Quit                     |
 
 ## Installation
 
-Streaky is designed to work well with `uv`.
+### Requirements
 
-### Install uv
+* Python 3.10+
+* `uv`
 
-On Arch/Garuda Linux:
+SQLite is included with Python.
+
+### Install `uv`
+
+On Arch Linux / Garuda Linux:
 
 ```bash
 sudo pacman -S uv
 ```
 
-### Clone the repository
+### Install Streaky
+
+Clone the repository:
 
 ```bash
 git clone https://github.com/YOUR_USERNAME/streaky.git
 cd streaky
 ```
 
-### Install dependencies
-
-```bash
-uv sync
-```
-
-### Run
-
-```bash
-uv run streaky
-```
-
-## Install Streaky as a terminal command
-
-From the project directory:
+Then install it:
 
 ```bash
 uv tool install .
 ```
 
-Then run:
+Start Streaky:
 
 ```bash
 streaky
 ```
 
-After changing the source code, reinstall the tool:
+## Running Without Installing
+
+If you're working on the project or just want to try it without installing the command globally:
+
+```bash
+uv sync
+uv run streaky
+```
+
+## Updating
+
+If you already have Streaky installed and have downloaded a newer version:
 
 ```bash
 uv tool install --force .
 ```
 
-Remove it with:
+If the project includes the setup scripts, you can also use:
 
 ```bash
-uv tool uninstall streaky
+./setup/update
 ```
 
-## Development
+## Storage
 
-Run Streaky without installing the command globally:
-
-```bash
-uv run streaky
-```
-
-The main application is:
+Your data is stored locally at:
 
 ```text
-app.py
+~/.streaky/streaky.db
 ```
 
-The CLI entry point is defined in:
+You don't need an account or an internet connection to use Streaky.
 
-```text
-pyproject.toml
-```
-
-```toml
-[project.scripts]
-streaky = "app:main"
-```
-
-
-## Storage information
-
-Streaky keeps its task data locally, similar to how Taskwarrior exposes its data location.
+### Check Storage Location
 
 Run:
 
@@ -260,105 +271,46 @@ Run:
 streaky show
 ```
 
-Example:
+This displays where Streaky stores your data.
 
-```text
-Streaky storage
-----------------
-Data directory : /home/your-user/.streaky
-Database       : /home/your-user/.streaky/streaky.db
-Database exists: yes
+## Reset Streaky
 
-Source/config
--------------
-Application    : installed through uv tool
-Project source : the directory from which Streaky was installed
-
-Commands
---------
-streaky        Start the TUI
-streaky show   Show storage information
-```
-
-The exact path is automatically based on your home directory.
-
-## Data storage
-
-Streaky stores everything locally.
-
-Database:
-
-```text
-~/.streaky/streaky.db
-```
-
-No account, cloud service, or external database is required.
-
-To completely reset Streaky, remove:
+To completely reset your data:
 
 ```bash
 rm ~/.streaky/streaky.db
 ```
 
-**Warning:** this permanently removes your local tasks, notes, completion history, and holidays.
+> ⚠️ This permanently deletes your tasks, notes, completion history, recurring tasks, and holidays.
 
-## Project structure
+## Commands
 
-```text
-streaky/
-├── app.py
-├── README.md
-├── pyproject.toml
-├── requirements.txt
-├── .gitignore
-└── LICENSE
+Start Streaky:
+
+```bash
+streaky
 ```
 
-## GitHub setup
+Show storage information:
 
-Before publishing:
-
-1. Create a GitHub repository named `streaky`.
-2. Replace `YOUR_USERNAME` in this README.
-3. Review the project description.
-4. Commit the source.
-5. Push the repository.
-6. Create a release such as `v0.6.0`.
-
-Suggested GitHub description:
-
-> A terminal-first daily task manager with streaks, holidays, notes, and a GitHub-style activity graph.
-
-Suggested topics:
-
-```text
-python
-textual
-tui
-terminal
-todo
-task-manager
-productivity
-sqlite
-streak
+```bash
+streaky show
 ```
 
-## Roadmap
+Show the version:
 
-Possible future improvements:
+```bash
+streaky --version
+```
 
-- monthly and yearly calendar navigation
-- task editing
-- priorities and tags
-- configurable recurring schedules
-- configurable streak rules
-- export/import
-- JSON backup
-- better themes
-- mouse support
-- optional notifications
-- statistics page
+Show help:
+
+```bash
+streaky --help
+```
 
 ## License
 
-MIT License. See `LICENSE`.
+MIT License.
+
+See [`LICENSE`](LICENSE) for details.

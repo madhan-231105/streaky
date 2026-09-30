@@ -488,14 +488,15 @@ class Streaky(App):
 
     def on_mount(self) -> None:
         self.db.ensure_recurring_future()
-        self.refresh()
+        self.refresh_ui()
 
-    def refresh(self) -> None:
+    def refresh_ui(self) -> None:
         self.refresh_tasks()
         self.refresh_calendar()
         self.refresh_heatmap()
         self.refresh_streak()
         self.refresh_notes()
+
 
     def refresh_tasks(self) -> None:
         title = self.query_one("#day-title", Label)
@@ -638,7 +639,7 @@ class Streaky(App):
                 self.selected_task_id,
                 not bool(row["completed"]),
             )
-            self.refresh()
+            self.refresh_ui()
 
     def action_add(self) -> None:
         def done(result: tuple[str, bool] | None) -> None:
@@ -652,7 +653,7 @@ class Streaky(App):
             else:
                 self.db.add_task(title, self.selected_day)
 
-            self.refresh()
+            self.refresh_ui()
 
         self.push_screen(AddTaskDialog(), done)
 
@@ -668,7 +669,7 @@ class Streaky(App):
         def done(confirmed: bool) -> None:
             if confirmed and self.selected_task_id is not None:
                 self.db.delete_task(self.selected_task_id)
-                self.refresh()
+                self.refresh_ui()
 
         self.push_screen(
             ConfirmDelete(row["title"]),
@@ -678,7 +679,7 @@ class Streaky(App):
     def action_holiday(self) -> None:
         if self.db.is_holiday(self.selected_day):
             self.db.remove_holiday(self.selected_day)
-            self.refresh()
+            self.refresh_ui()
             return
 
         def done(carry: bool) -> None:
@@ -689,7 +690,7 @@ class Streaky(App):
                     self.selected_day
                 )
 
-            self.refresh()
+            self.refresh_ui()
 
         self.push_screen(
             HolidayCarryDialog(),
@@ -706,11 +707,11 @@ class Streaky(App):
 
     def action_prev_day(self) -> None:
         self.selected_day -= timedelta(days=1)
-        self.refresh()
+        self.refresh_ui()
 
     def action_next_day(self) -> None:
         self.selected_day += timedelta(days=1)
-        self.refresh()
+        self.refresh_ui()
 
     def action_all_tasks(self) -> None:
         self.push_screen(AllTasksScreen(self.db))
